@@ -10,9 +10,6 @@ const {
     ButtonBuilder, 
     ButtonStyle, 
     StringSelectMenuBuilder,
-    ModalBuilder,
-    TextInputBuilder,
-    TextInputStyle,
     ChannelType,
     PermissionFlagsBits,
     ActivityType
@@ -20,8 +17,7 @@ const {
 
 const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs').promises;
-const path = require('path');
-const http = require('http');
+const express = require('express');
 
 // ============================================
 // ⚙️ إعدادات التكوين
@@ -101,8 +97,7 @@ class DatabaseManager {
 
         this.db.run(`
             CREATE TABLE IF NOT EXISTS tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticket_id TEXT UNIQUE,
+                ticket_id TEXT PRIMARY KEY,
                 channel_id TEXT UNIQUE,
                 guild_id TEXT,
                 user_id TEXT,
@@ -112,8 +107,7 @@ class DatabaseManager {
                 claimed_by TEXT,
                 claimed_at DATETIME,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                closed_at DATETIME,
-                transcript TEXT
+                closed_at DATETIME
             )
         `);
 
@@ -172,12 +166,31 @@ class DatabaseManager {
 const db = new DatabaseManager();
 
 // ============================================
-// 🧠 محرك الذكاء الاصطناعي
+// 🧠 محرك الذكاء الاصطناعي (Gemini)
 // ============================================
 class AIAssistant {
     constructor() {
         this.isEnabled = CONFIG.AI.ENABLED;
         this.conversations = new Map();
+        this.GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyBFpIHE5k5Bx-2BVu6KwsOltfCyvqHglx4';
+        this.initGemini();
+    }
+
+    async initGemini() {
+        if (this.GEMINI_API_KEY) {
+            try {
+                const { GoogleGenerativeAI } = await import('@google/generative-ai');
+                this.genAI = new GoogleGenerativeAI(this.GEMINI_API_KEY);
+                this.model = this.genAI.getGenerativeModel({ model: 'gemini-pro' });
+                console.log('✅ تم تهيئة Gemini AI بنجاح');
+            } catch (error) {
+                console.error('❌ خطأ في تهيئة Gemini AI:', error.message);
+                this.model = null;
+            }
+        } else {
+            console.warn('⚠️ GEMINI_API_KEY غير مضبوط، سيتم استخدام الذكاء الاصطناعي البسيط');
+            this.model = null;
+        }
     }
 
     async generateResponse(message, context) {
@@ -185,18 +198,42 @@ class AIAssistant {
 
         await new Promise(resolve => setTimeout(resolve, CONFIG.AI.RESPONSE_DELAY));
 
+        if (this.model) {
+            try {
+                const prompt = `
+أنت مساعد ذكي في نظام تذاكر الدعم الفني على Discord.
+المستخدم يقول: "${message}"
+التذكرة رقم: ${context.ticketId}
+سبب التذكرة: ${context.reason}
+
+قم بالرد بطريقة مفيدة وودية باللغة العربية، وقدم اقتراحات لحل المشكلة إذا أمكن.
+إذا كانت المشكلة تتطلب تدخل فريق الدعم البشري، شجع المستخدم على استخدام زر "طلب دعم فني مباشر".
+كن داعماً ومتفهماً، واجعل ردك قصيراً وواضحاً.
+
+الرد المطلوب:`;
+                
+                const result = await this.model.generateContent(prompt);
+                const response = await result.response;
+                const text = response.text();
+                
+                return this.formatResponse(text, context);
+            } catch (error) {
+                console.error('❌ خطأ في Gemini AI:', error.message);
+            }
+        }
+
         const lowerMessage = message.toLowerCase();
         const responses = {
-            'لا استطيع الدخول': 'حاول مسح ذاكرة التخزين المؤقت للمتصفح أو إعادة تثبيت التطبيق.',
-            'تطبيق لا يعمل': 'جرب إعادة تشغيل التطبيق أو تحديثه إلى آخر نسخة.',
-            'مشكلة في الصوت': 'تحقق من إعدادات الصوت في جهازك ومن صلاحيات الميكروفون.',
-            'انقطاع اتصال': 'تحقق من اتصالك بالإنترنت وجرب إعادة تشغيل الراوتر.',
-            'مرحبا': 'مرحباً بك! كيف يمكنني مساعدتك اليوم؟',
-            'شكرا': 'العفو! 😊 سعيد لأنني استطعت المساعدة.',
-            'اقتراح': 'شكراً لاقتراحك! سأنقله لفريق التطوير للنظر فيه.',
-            'ميزة جديدة': 'فكرة رائعة! سنأخذها بعين الاعتبار للتحديثات القادمة.',
-            'بلاغ': 'شكراً للإبلاغ. سيقوم فريق الإدارة بالتحقق من الأمر.',
-            'مشكلة مع عضو': 'سأقوم بإبلاغ فريق الإدارة للتعامل مع الموقف.'
+            'مرحبا': 'مرحباً بك! 👋 كيف يمكنني مساعدتك اليوم؟',
+            'اهلا': 'أهلاً وسهلاً! 😊 أخبرني ما هي مشكلتك؟',
+            'شكرا': 'العفو! 🫡 سعيد لأنني استطعت المساعدة.',
+            'مشكور': 'العفو دائماً! 💖 هل تحتاج إلى أي مساعدة أخرى؟',
+            'مشكلة': 'أفهم أن لديك مشكلة. 🛠️ يمكنك شرحها بشكل مفصل؟',
+            'مساعدة': 'سأساعدك بكل سرور! 🤝 ما هو الموضوع الذي تريد المساعدة فيه؟',
+            'تطبيق': 'إذا كنت تواجه مشكلة في التطبيق، جرب:\n1. إعادة تشغيل التطبيق\n2. تحديث التطبيق\n3. إعادة تثبيت التطبيق',
+            'انترنت': 'مشاكل الإنترنت يمكن حلها عن طريق:\n1. إعادة تشغيل الراوتر\n2. التحقق من اتصالك\n3. الاتصال بمزود الخدمة',
+            'صوت': 'لمشاكل الصوت:\n1. تحقق من إعدادات الصوت\n2. تأكد من توصيل السماعات\n3. جرب جهازاً آخر',
+            'دخول': 'إذا كنت تواجه مشكلة في الدخول:\n1. تحقق من اسم المستخدم/كلمة المرور\n2. جرب استعادة الحساب\n3. اتصل بالدعم'
         };
 
         for (const [keyword, response] of Object.entries(responses)) {
@@ -206,8 +243,8 @@ class AIAssistant {
         }
 
         return this.formatResponse(
-            'أفهم أن لديك سؤال. يمكنك شرح مشكلتك بشكل أكثر تفصيلاً؟\n' +
-            'إذا كنت بحاجة إلى دعم بشري فوري، اضغط على زر 🛠️ "طلب دعم فني مباشر".',
+            'أفهم أن لديك استفسار. 🤔 يمكنك شرح مشكلتك بشكل أكثر تفصيلاً؟\n' +
+            'إذا كنت بحاجة إلى دعم بشري فوري، اضغط على زر 🛠️ "طلب دعم بشري".',
             context
         );
     }
@@ -215,13 +252,21 @@ class AIAssistant {
     formatResponse(text, context) {
         return new EmbedBuilder()
             .setColor(CONFIG.COLORS.INFO)
-            .setTitle('🤖 المساعد الذكي')
+            .setTitle('🤖 المساعد الذكي - Gemini')
             .setDescription(text)
             .addFields(
-                { name: '💡 نصيحة سريعة', value: 'اكتب مشكلتك بشكل مفصل للحصول على مساعدة أفضل', inline: false },
-                { name: '👥 فريق الدعم', value: 'سيتم إشعار فريق الدعم إذا احتجت إلى مساعدة بشرية', inline: false }
+                { 
+                    name: '💡 نصيحة', 
+                    value: 'اكتب مشكلتك بشكل مفصل للحصول على حل أفضل', 
+                    inline: false 
+                },
+                { 
+                    name: '👥 فريق الدعم', 
+                    value: 'سيتم إشعار فريق الدعم إذا احتجت إلى مساعدة بشرية', 
+                    inline: false 
+                }
             )
-            .setFooter({ text: 'هذا رد آلي - للدعم البشري اضغط على 🛠️' })
+            .setFooter({ text: 'هذا رد آلي باستخدام Gemini AI' })
             .setTimestamp();
     }
 
@@ -234,62 +279,244 @@ class AIAssistant {
 const ai = new AIAssistant();
 
 // ============================================
-// 🎫 مدير التذاكر
+// 🎫 مدير التذاكر (مصحح)
 // ============================================
+class TicketManager {
+    constructor() {
+        this.activeTickets = new Map();
+        this.ticketCooldowns = new Map();
+    }
 
--- حذف الجدول القديم إذا كان موجودًا
-DROP TABLE IF EXISTS tickets;
+    async createTicket(guild, user, reason) {
+        const cooldownKey = `${guild.id}-${user.id}`;
+        const cooldown = this.ticketCooldowns.get(cooldownKey);
+        
+        if (cooldown && Date.now() - cooldown < 60000) {
+            throw new Error('⏳ يرجى الانتظار دقيقة قبل فتح تذكرة جديدة');
+        }
 
--- إنشاء الجدول الجديد المناسب للنظام
-CREATE TABLE tickets (
-    ticket_id TEXT PRIMARY KEY,  -- تغيير إلى TEXT
-    channel_id TEXT,
-    guild_id TEXT,
-    user_id TEXT,
-    user_tag TEXT,
-    reason TEXT,
-    status TEXT DEFAULT 'open',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    closed_at DATETIME,
-    claimed_by TEXT,
-    claimed_at DATETIME
-);
+        let settings = await db.get(
+            'SELECT * FROM guild_settings WHERE guild_id = ?',
+            [guild.id]
+        );
 
--- إنشاء جدول إعدادات السيرفر
-CREATE TABLE IF NOT EXISTS guild_settings (
-    guild_id TEXT PRIMARY KEY,
-    ticket_category_id TEXT,
-    ticket_counter INTEGER DEFAULT 0
-);
+        if (!settings) {
+            await db.run(
+                'INSERT INTO guild_settings (guild_id, ticket_counter) VALUES (?, ?)',
+                [guild.id, 0]
+            );
+            settings = { ticket_counter: 0 };
+        }
 
--- إنشاء جدول أدوار الدعم
-CREATE TABLE IF NOT EXISTS support_roles (
-    guild_id TEXT,
-    role_id TEXT,
-    PRIMARY KEY (guild_id, role_id)
-);
+        const ticketCounter = (settings.ticket_counter || 0) + 1;
+        const ticketId = `TICKET-${ticketCounter.toString().padStart(4, '0')}`;
 
--- إنشاء جدول إحصائيات المستخدمين
-CREATE TABLE IF NOT EXISTS user_stats (
-    user_id TEXT,
-    guild_id TEXT,
-    tickets_opened INTEGER DEFAULT 0,
-    tickets_closed INTEGER DEFAULT 0,
-    last_ticket_at DATETIME,
-    PRIMARY KEY (user_id, guild_id)
-);
+        await db.run(
+            'UPDATE guild_settings SET ticket_counter = ? WHERE guild_id = ?',
+            [ticketCounter, guild.id]
+        );
 
--- إنشاء جدول سجل المحادثات
-CREATE TABLE IF NOT EXISTS chat_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ticket_id TEXT,
-    user_id TEXT,
-    user_tag TEXT,
-    message TEXT,
-    is_support INTEGER DEFAULT 0,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
-);
+        let category = guild.channels.cache.find(c => 
+            c.type === ChannelType.GuildCategory && 
+            c.id === settings?.ticket_category_id
+        );
+
+        if (!category && settings?.ticket_category_id) {
+            try {
+                category = await guild.channels.fetch(settings.ticket_category_id);
+            } catch (error) {
+                category = null;
+            }
+        }
+
+        if (!category) {
+            category = await guild.channels.create({
+                name: CONFIG.CHANNELS.DEFAULT_CATEGORY_NAME,
+                type: ChannelType.GuildCategory,
+                permissionOverwrites: [
+                    {
+                        id: guild.id,
+                        deny: [PermissionFlagsBits.ViewChannel]
+                    }
+                ]
+            });
+
+            await db.run(
+                'INSERT OR REPLACE INTO guild_settings (guild_id, ticket_category_id) VALUES (?, ?)',
+                [guild.id, category.id]
+            );
+        }
+
+        const channelName = `🎫-${user.username}-${ticketCounter}`;
+        const ticketChannel = await guild.channels.create({
+            name: channelName.substring(0, 100),
+            type: ChannelType.GuildText,
+            parent: category.id,
+            topic: `تذكرة ${ticketId} - ${user.tag} - ${reason}`.substring(0, 1024),
+            permissionOverwrites: [
+                {
+                    id: guild.id,
+                    deny: [PermissionFlagsBits.ViewChannel]
+                },
+                {
+                    id: user.id,
+                    allow: [
+                        PermissionFlagsBits.ViewChannel,
+                        PermissionFlagsBits.SendMessages,
+                        PermissionFlagsBits.ReadMessageHistory,
+                        PermissionFlagsBits.AttachFiles,
+                        PermissionFlagsBits.EmbedLinks
+                    ]
+                }
+            ]
+        });
+
+        const supportRoles = await db.query(
+            'SELECT role_id FROM support_roles WHERE guild_id = ?',
+            [guild.id]
+        );
+
+        for (const roleData of supportRoles) {
+            const role = guild.roles.cache.get(roleData.role_id);
+            if (role) {
+                await ticketChannel.permissionOverwrites.edit(role, {
+                    ViewChannel: true,
+                    SendMessages: true,
+                    ReadMessageHistory: true,
+                    ManageMessages: true,
+                    AttachFiles: true,
+                    EmbedLinks: true
+                });
+            }
+        }
+
+        await ticketChannel.permissionOverwrites.edit(client.user.id, {
+            ViewChannel: true,
+            SendMessages: true,
+            ReadMessageHistory: true,
+            ManageMessages: true,
+            ManageChannels: true,
+            AttachFiles: true,
+            EmbedLinks: true
+        });
+
+        await db.run(
+            `INSERT INTO tickets (ticket_id, channel_id, guild_id, user_id, user_tag, reason, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [ticketId, ticketChannel.id, guild.id, user.id, user.tag, reason, 'open']
+        );
+
+        await db.run(
+            `INSERT INTO user_stats (user_id, guild_id, tickets_opened, last_ticket_at) VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+             ON CONFLICT(user_id, guild_id) DO UPDATE SET tickets_opened = tickets_opened + 1, last_ticket_at = CURRENT_TIMESTAMP`,
+            [user.id, guild.id]
+        );
+
+        this.ticketCooldowns.set(cooldownKey, Date.now());
+        this.activeTickets.set(ticketChannel.id, {
+            id: ticketId,
+            user: user.id,
+            guild: guild.id,
+            reason: reason,
+            createdAt: new Date()
+        });
+
+        return { ticketId, channel: ticketChannel };
+    }
+
+    async closeTicket(channelId, closerId, reason = 'تم الإغلاق بواسطة فريق الدعم') {
+        const ticket = await db.get(
+            'SELECT * FROM tickets WHERE channel_id = ?',
+            [channelId]
+        );
+
+        if (!ticket) throw new Error('التذكرة غير موجودة');
+
+        await db.run(
+            'UPDATE tickets SET status = ?, closed_at = CURRENT_TIMESTAMP WHERE channel_id = ?',
+            ['closed', channelId]
+        );
+
+        await db.run(
+            `UPDATE user_stats SET tickets_closed = tickets_closed + 1 WHERE user_id = ? AND guild_id = ?`,
+            [closerId, ticket.guild_id]
+        );
+
+        this.activeTickets.delete(channelId);
+        return ticket;
+    }
+
+    async reopenTicket(channelId) {
+        const ticket = await db.get(
+            'SELECT * FROM tickets WHERE channel_id = ?',
+            [channelId]
+        );
+
+        if (!ticket) throw new Error('التذكرة غير موجودة');
+
+        await db.run(
+            'UPDATE tickets SET status = ?, closed_at = NULL WHERE channel_id = ?',
+            ['open', channelId]
+        );
+
+        this.activeTickets.set(channelId, {
+            id: ticket.ticket_id,
+            user: ticket.user_id,
+            guild: ticket.guild_id,
+            reason: ticket.reason,
+            createdAt: new Date(ticket.created_at)
+        });
+
+        return ticket;
+    }
+
+    async claimTicket(channelId, userId) {
+        const ticket = await db.get(
+            'SELECT * FROM tickets WHERE channel_id = ?',
+            [channelId]
+        );
+
+        if (!ticket) throw new Error('التذكرة غير موجودة');
+
+        await db.run(
+            'UPDATE tickets SET claimed_by = ?, claimed_at = CURRENT_TIMESTAMP WHERE channel_id = ?',
+            [userId, channelId]
+        );
+
+        return ticket;
+    }
+
+    async getTicketStats(guildId) {
+        const stats = await db.get(
+            `SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open,
+                SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) as closed
+            FROM tickets WHERE guild_id = ?`,
+            [guildId]
+        );
+
+        return stats || { total: 0, open: 0, closed: 0 };
+    }
+
+    async saveChatLog(ticketId, userId, userTag, message, isSupport = false) {
+        await db.run(
+            `INSERT INTO chat_logs (ticket_id, user_id, user_tag, message, is_support) VALUES (?, ?, ?, ?, ?)`,
+            [ticketId, userId, userTag, message, isSupport ? 1 : 0]
+        );
+    }
+
+    async generateTranscript(ticketId) {
+        const logs = await db.query(
+            'SELECT * FROM chat_logs WHERE ticket_id = ? ORDER BY timestamp ASC',
+            [ticketId]
+        );
+
+        const ticket = await db.get(
+            'SELECT * FROM tickets WHERE ticket_id = ?',
+            [ticketId]
+        );
+
+        if (!ticket) return 'التذكرة غير موجودة';
 
         let transcript = `📄 محضر التذكرة ${ticketId}\n`;
         transcript += '='.repeat(50) + '\n\n';
@@ -379,7 +606,7 @@ class UIManager {
                             description: 'تقديم اقتراح أو فكرة جديدة'
                         },
                         {
-                            label: '💰 شراء / اشتراك -   قريبا',
+                            label: '💰 شراء / اشتراك',
                             value: 'purchase',
                             description: 'استفسارات حول الشراء أو الاشتراكات'
                         }
@@ -553,15 +780,14 @@ client.on('ready', async () => {
         status: 'online'
     });
 
-    registerCommands();
+    await registerCommands();
 });
 
 async function registerCommands() {
     const commands = [
         {
             name: 'setup',
-            description: 'إعداد نظام التذاكر في السيرفر',
-            default_member_permissions: PermissionFlagsBits.Administrator.toString()
+            description: 'إعداد نظام التذاكر في السيرفر'
         },
         {
             name: 'add-support-role',
@@ -571,8 +797,7 @@ async function registerCommands() {
                 type: 8,
                 description: 'الرتبة المراد إضافتها',
                 required: true
-            }],
-            default_member_permissions: PermissionFlagsBits.Administrator.toString()
+            }]
         },
         {
             name: 'remove-support-role',
@@ -582,13 +807,11 @@ async function registerCommands() {
                 type: 8,
                 description: 'الرتبة المراد إزالتها',
                 required: true
-            }],
-            default_member_permissions: PermissionFlagsBits.Administrator.toString()
+            }]
         },
         {
             name: 'ticket-stats',
-            description: 'عرض إحصائيات التذاكر',
-            default_member_permissions: PermissionFlagsBits.ManageChannels.toString()
+            description: 'عرض إحصائيات التذاكر'
         },
         {
             name: 'ai',
@@ -602,8 +825,7 @@ async function registerCommands() {
                     { name: 'تشغيل', value: 'on' },
                     { name: 'إيقاف', value: 'off' }
                 ]
-            }],
-            default_member_permissions: PermissionFlagsBits.Administrator.toString()
+            }]
         },
         {
             name: 'transcript',
@@ -611,14 +833,13 @@ async function registerCommands() {
             options: [{
                 name: 'ticket_id',
                 type: 3,
-                description: 'رقم التذكرة (اختياري - يستخدم القناة الحالية)',
+                description: 'رقم التذكرة',
                 required: false
             }]
         },
         {
             name: 'config',
-            description: 'عرض إعدادات النظام',
-            default_member_permissions: PermissionFlagsBits.Administrator.toString()
+            description: 'عرض إعدادات النظام'
         }
     ];
 
@@ -630,11 +851,7 @@ async function registerCommands() {
     }
 }
 
-// ============================================
-// 🔘 معالجة الأزرار والتفاعلات
-// ============================================
 client.on('interactionCreate', async interaction => {
-    // معالجة الأوامر
     if (interaction.isCommand()) {
         const { commandName } = interaction;
 
@@ -663,25 +880,15 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // معالجة الأزرار
     if (interaction.isButton()) {
         await handleButtonInteraction(interaction);
     }
 
-    // معالجة القوائم المختصرة
     if (interaction.isStringSelectMenu()) {
         await handleSelectMenu(interaction);
     }
-
-    // معالجة النماذج
-    if (interaction.isModalSubmit()) {
-        await handleModal(interaction);
-    }
 });
 
-// ============================================
-// 🛠️ معالجات الأوامر
-// ============================================
 async function handleSetup(interaction) {
     if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({
@@ -691,30 +898,6 @@ async function handleSetup(interaction) {
     }
 
     try {
-        const existingLogs = interaction.guild.channels.cache.find(
-            c => c.name === CONFIG.CHANNELS.LOGS_CHANNEL_NAME && c.type === ChannelType.GuildText
-        );
-
-        let logsChannel = existingLogs;
-        if (!existingLogs) {
-            logsChannel = await interaction.guild.channels.create({
-                name: CONFIG.CHANNELS.LOGS_CHANNEL_NAME,
-                type: ChannelType.GuildText,
-                topic: '📁 سجلات نظام التذاكر',
-                permissionOverwrites: [
-                    {
-                        id: interaction.guild.id,
-                        deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions]
-                    }
-                ]
-            });
-        }
-
-        await db.run(
-            `INSERT OR REPLACE INTO guild_settings (guild_id, logs_channel_id) VALUES (?, ?)`,
-            [interaction.guild.id, logsChannel.id]
-        );
-
         const embed = ui.createTicketEmbed();
         const button = ui.createTicketButton();
 
@@ -724,15 +907,9 @@ async function handleSetup(interaction) {
         });
 
         await interaction.reply({
-            content: `✅ تم إعداد نظام التذاكر بنجاح!\n• 📁 قناة السجلات: ${logsChannel}\n• 🎫 رسالة التذاكر: ${setupMessage.url}`,
+            content: `✅ تم إعداد نظام التذاكر بنجاح!\n🎫 رسالة التذاكر: ${setupMessage.url}`,
             ephemeral: true
         });
-
-        await logger.logAction(
-            interaction.guild,
-            'إعداد النظام',
-            `تم إعداد نظام التذاكر بواسطة ${interaction.user.tag}`
-        );
 
     } catch (error) {
         console.error('خطأ في الإعداد:', error);
@@ -763,12 +940,6 @@ async function handleAddSupportRole(interaction) {
             content: `✅ تم إضافة رتبة الدعم **${role.name}** بنجاح`,
             ephemeral: true
         });
-
-        await logger.logAction(
-            interaction.guild,
-            'إضافة رتبة دعم',
-            `تمت إضافة ${role} بواسطة ${interaction.user.tag}`
-        );
 
     } catch (error) {
         await interaction.reply({
@@ -806,12 +977,6 @@ async function handleRemoveSupportRole(interaction) {
             ephemeral: true
         });
 
-        await logger.logAction(
-            interaction.guild,
-            'إزالة رتبة دعم',
-            `تمت إزالة ${role} بواسطة ${interaction.user.tag}`
-        );
-
     } catch (error) {
         await interaction.reply({
             content: '❌ حدث خطأ: ' + error.message,
@@ -821,13 +986,6 @@ async function handleRemoveSupportRole(interaction) {
 }
 
 async function handleTicketStats(interaction) {
-    if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageChannels)) {
-        return interaction.reply({
-            content: '❌ تحتاج إلى صلاحية **إدارة القنوات** لاستخدام هذا الأمر.',
-            ephemeral: true
-        });
-    }
-
     try {
         const stats = await ticketManager.getTicketStats(interaction.guild.id);
         const embed = ui.createStatsEmbed(stats, interaction.guild);
@@ -864,12 +1022,6 @@ async function handleAI(interaction) {
         content: `✅ تم **${isEnabled ? 'تشغيل' : 'إيقاف'}** الذكاء الاصطناعي بنجاح`,
         ephemeral: true
     });
-
-    await logger.logAction(
-        interaction.guild,
-        'تغيير حالة الذكاء الاصطناعي',
-        `تم ${isEnabled ? 'تشغيل' : 'إيقاف'} الذكاء الاصطناعي بواسطة ${interaction.user.tag}`
-    );
 }
 
 async function handleTranscript(interaction) {
@@ -973,9 +1125,6 @@ async function handleConfig(interaction) {
     }
 }
 
-// ============================================
-// 🔘 معالجة الأزرار
-// ============================================
 async function handleButtonInteraction(interaction) {
     const { customId } = interaction;
 
@@ -1028,8 +1177,7 @@ async function handleCloseTicket(interaction) {
             .setColor(CONFIG.COLORS.ERROR)
             .addFields(
                 { name: '👤 صاحب التذكرة', value: `<@${ticket.user_id}>`, inline: true },
-                { name: '🎫 السبب', value: ticket.reason, inline: true },
-                { name: '📅 مدة التذكرة', value: formatDuration(new Date(ticket.created_at), new Date()), inline: false }
+                { name: '🎫 السبب', value: ticket.reason, inline: true }
             )
             .setTimestamp();
 
@@ -1053,12 +1201,6 @@ async function handleCloseTicket(interaction) {
             content: '**🔒 تم إغلاق هذه التذكرة**\nلإعادة الفتح، اضغط على الزر أدناه:',
             components: [reopenButton]
         });
-
-        await logger.logAction(
-            interaction.guild,
-            'إغلاق تذكرة',
-            `تم إغلاق التذكرة ${ticket.ticket_id} بواسطة ${interaction.user.tag}`
-        );
 
     } catch (error) {
         await interaction.reply({
@@ -1106,22 +1248,11 @@ async function handleClaimTicket(interaction) {
             .setColor(CONFIG.COLORS.WARNING)
             .addFields(
                 { name: '🎫 رقم التذكرة', value: ticket.ticket_id, inline: true },
-                { name: '👤 صاحب التذكرة', value: `<@${ticket.user_id}>`, inline: true },
-                { name: '⏰ وقت الانتظار', value: formatDuration(new Date(ticket.created_at), new Date()), inline: true }
+                { name: '👤 صاحب التذكرة', value: `<@${ticket.user_id}>`, inline: true }
             )
             .setTimestamp();
 
         await interaction.channel.send({ embeds: [embed] });
-
-        const supportRoles = await db.query(
-            'SELECT role_id FROM support_roles WHERE guild_id = ?',
-            [interaction.guild.id]
-        );
-
-        const mentions = supportRoles.map(r => `<@&${r.role_id}>`).join(' ');
-        if (mentions) {
-            await interaction.channel.send(`📢 ${mentions} - تم طلب دعم فني مباشر!`);
-        }
 
         await interaction.reply({
             content: '✅ تم إرسال طلب الدعم الفني',
@@ -1187,13 +1318,6 @@ async function handleReopenTicket(interaction) {
     try {
         const ticket = await ticketManager.reopenTicket(interaction.channel.id);
 
-        if (!ticket) {
-            return interaction.reply({
-                content: '❌ هذه ليست قناة تذكرة',
-                ephemeral: true
-            });
-        }
-
         await interaction.channel.permissionOverwrites.edit(ticket.user_id, {
             SendMessages: true,
             AddReactions: true
@@ -1207,22 +1331,6 @@ async function handleReopenTicket(interaction) {
 
         await interaction.reply({ embeds: [embed] });
 
-        const messages = await interaction.channel.messages.fetch({ limit: 10 });
-        const closeMessage = messages.find(m => 
-            m.components.length > 0 && 
-            m.components[0].components.some(c => c.customId === 'reopen_ticket')
-        );
-        
-        if (closeMessage) {
-            await closeMessage.delete().catch(() => {});
-        }
-
-        await logger.logAction(
-            interaction.guild,
-            'إعادة فتح تذكرة',
-            `أعيد فتح التذكرة ${ticket.ticket_id} بواسطة ${interaction.user.tag}`
-        );
-
     } catch (error) {
         await interaction.reply({
             content: '❌ حدث خطأ: ' + error.message,
@@ -1231,9 +1339,6 @@ async function handleReopenTicket(interaction) {
     }
 }
 
-// ============================================
-// 📝 معالجة القوائم المختصرة
-// ============================================
 async function handleSelectMenu(interaction) {
     if (interaction.customId === 'select_reason') {
         const reason = interaction.values[0];
@@ -1262,12 +1367,6 @@ async function handleSelectMenu(interaction) {
                 content: `✅ تم إنشاء تذكرتك: ${channel}\n🎫 الرقم: \`${ticketId}\``
             });
 
-            await logger.logAction(
-                interaction.guild,
-                'فتح تذكرة',
-                `${interaction.user.tag} فتح تذكرة ${ticketId} للسبب: ${reason}`
-            );
-
         } catch (error) {
             await interaction.editReply({
                 content: `❌ حدث خطأ: ${error.message}`
@@ -1276,9 +1375,6 @@ async function handleSelectMenu(interaction) {
     }
 }
 
-// ============================================
-// 💬 معالجة الرسائل والذكاء الاصطناعي
-// ============================================
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (message.channel.type !== ChannelType.GuildText) return;
@@ -1333,42 +1429,65 @@ client.on('messageCreate', async message => {
 });
 
 // ============================================
-// 🌐 خادم ويب للحفاظ على التشغيل
+// 🌐 خادم ويب
 // ============================================
-const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('🎫 بوت تذاكر Discord يعمل بشكل طبيعي\n' +
-           `🕒 الوقت: ${new Date().toLocaleString('ar-SA')}\n` +
-           `📊 السيرفرات: ${client.guilds?.cache?.size || 0}\n` +
-           `👥 المستخدمون: ${client.users?.cache?.size || 0}`);
-});
-
-server.listen(process.env.PORT || 3000, () => {
-    console.log(`🌐 خادم الويب يعمل على المنفذ: ${process.env.PORT || 3000}`);
-});
-
-
-const express = require('express');
 const app = express();
-
-app.get('/', (req, res) => res.send('Bot is online ✅'));
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
 
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>🎫 بوت التذاكر</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    text-align: center;
+                    padding: 50px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                }
+                h1 {
+                    font-size: 3em;
+                    margin-bottom: 20px;
+                }
+                .status {
+                    font-size: 1.5em;
+                    margin: 20px 0;
+                    padding: 20px;
+                    background: rgba(255,255,255,0.1);
+                    border-radius: 10px;
+                    display: inline-block;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>🎫 بوت التذاكر يعمل بنجاح!</h1>
+            <div class="status">
+                ✅ البوت متصل بـ Discord<br>
+                🤖 Gemini AI: ${ai.model ? '✅ نشط' : '⚠️ في الوضع البسيط'}<br>
+                📊 السيرفرات: ${client.guilds?.cache?.size || 0}<br>
+                👥 المستخدمون: ${client.users?.cache?.size || 0}
+            </div>
+        </body>
+        </html>
+    `);
+});
+
+app.listen(PORT, () => {
+    console.log(`🌐 خادم الويب يعمل على المنفذ: ${PORT}`);
+});
 
 // ============================================
 // 🚀 تشغيل البوت
 // ============================================
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
-
 if (!DISCORD_TOKEN) {
     console.error('❌ DISCORD_TOKEN غير موجود في Environment Variables');
     process.exit(1);
 }
-
-
 
 client.login(DISCORD_TOKEN).catch(error => {
     console.error('❌ فشل تسجيل الدخول:', error);
@@ -1385,34 +1504,3 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('uncaughtException', (error) => {
     console.error('❌ استثناء غير مكتشف:', error);
 });
-
-// ============================================
-// 📋 تعليمات التشغيل السريع
-// ============================================
-console.log(`
-🎫 بوت تذاكر Discord مع الذكاء الاصطناعي
-===========================================
-
-✅ الإصدار: 2.0.0 (مصحح)
-✅ الأخطاء المصححة:
-  - ✅ permissionOverwrites (بدلاً من permissionOverwrides)
-  - ✅ formatDuration (بدلاً من this.formatDuration)
-  - ✅ دمج معالجة reopen_ticket
-  - ✅ الذكاء الاصطناعي يتحقق من إعداد السيرفر
-  - ✅ claim حقيقي مع تحقق الصلاحيات
-  - ✅ إعادة إضافة التذاكر إلى activeTickets عند إعادة الفتح
-
-⚡ أوامر البوت:
-1. /setup - إعداد النظام في السيرفر
-2. /add-support-role - إضافة رتبة دعم
-3. /ticket-stats - إحصائيات التذاكر
-4. /ai on/off - التحكم بالذكاء الاصطناعي
-5. /transcript - حفظ محضر المحادثة
-
-🚀 التشغيل:
-node bot.js
-
-===========================================
-
-`);
-

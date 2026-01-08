@@ -1543,7 +1543,7 @@ server.listen(process.env.PORT || 3000, () => {
 // ============================================
 // 🚀 تشغيل البوت
 // ============================================
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN ||  
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN; 
 
 
 client.login(DISCORD_TOKEN).catch(error => {
@@ -1589,4 +1589,5 @@ console.log(`
 node bot.js
 
 ===========================================
+
 `);

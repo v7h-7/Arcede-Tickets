@@ -236,253 +236,60 @@ const ai = new AIAssistant();
 // ============================================
 // 🎫 مدير التذاكر
 // ============================================
-class TicketManager {
-    constructor() {
-        this.activeTickets = new Map();
-        this.ticketCooldowns = new Map();
-    }
 
-    async createTicket(guild, user, reason) {
-        const cooldownKey = `${guild.id}-${user.id}`;
-        const cooldown = this.ticketCooldowns.get(cooldownKey);
-        if (cooldown && Date.now() - cooldown < 60000) {
-            throw new Error('⏳ يرجى الانتظار دقيقة قبل فتح تذكرة جديدة');
-        }
+-- حذف الجدول القديم إذا كان موجودًا
+DROP TABLE IF EXISTS tickets;
 
-        const settings = await db.get(
-            'SELECT * FROM guild_settings WHERE guild_id = ?',
-            [guild.id]
-        );
+-- إنشاء الجدول الجديد المناسب للنظام
+CREATE TABLE tickets (
+    ticket_id TEXT PRIMARY KEY,  -- تغيير إلى TEXT
+    channel_id TEXT,
+    guild_id TEXT,
+    user_id TEXT,
+    user_tag TEXT,
+    reason TEXT,
+    status TEXT DEFAULT 'open',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    closed_at DATETIME,
+    claimed_by TEXT,
+    claimed_at DATETIME
+);
 
-        const ticketCounter = (settings?.ticket_counter || 0) + 1;
-        const ticketId = `TICKET-${ticketCounter.toString().padStart(4, '0')}`;
+-- إنشاء جدول إعدادات السيرفر
+CREATE TABLE IF NOT EXISTS guild_settings (
+    guild_id TEXT PRIMARY KEY,
+    ticket_category_id TEXT,
+    ticket_counter INTEGER DEFAULT 0
+);
 
-        await db.run(
-            'UPDATE guild_settings SET ticket_counter = ? WHERE guild_id = ?',
-            [ticketCounter, guild.id]
-        );
+-- إنشاء جدول أدوار الدعم
+CREATE TABLE IF NOT EXISTS support_roles (
+    guild_id TEXT,
+    role_id TEXT,
+    PRIMARY KEY (guild_id, role_id)
+);
 
-        let category = guild.channels.cache.find(c => 
-            c.type === ChannelType.GuildCategory && 
-            c.id === settings?.ticket_category_id
-        );
+-- إنشاء جدول إحصائيات المستخدمين
+CREATE TABLE IF NOT EXISTS user_stats (
+    user_id TEXT,
+    guild_id TEXT,
+    tickets_opened INTEGER DEFAULT 0,
+    tickets_closed INTEGER DEFAULT 0,
+    last_ticket_at DATETIME,
+    PRIMARY KEY (user_id, guild_id)
+);
 
-        if (!category && settings?.ticket_category_id) {
-            category = await guild.channels.fetch(settings.ticket_category_id).catch(() => null);
-        }
-
-        if (!category) {
-            category = await guild.channels.create({
-                name: CONFIG.CHANNELS.DEFAULT_CATEGORY_NAME,
-                type: ChannelType.GuildCategory,
-                permissionOverwrites: [
-                    {
-                        id: guild.id,
-                        deny: [PermissionFlagsBits.ViewChannel]
-                    }
-                ]
-            });
-
-            await db.run(
-                'INSERT OR REPLACE INTO guild_settings (guild_id, ticket_category_id) VALUES (?, ?)',
-                [guild.id, category.id]
-            );
-        }
-
-        const channelName = `🎫-${user.username}-${ticketCounter}`;
-        const ticketChannel = await guild.channels.create({
-            name: channelName,
-            type: ChannelType.GuildText,
-            parent: category.id,
-            topic: `تذكرة ${ticketId} - ${user.tag} - ${reason}`,
-            permissionOverwrites: [
-                {
-                    id: guild.id,
-                    deny: [PermissionFlagsBits.ViewChannel]
-                },
-                {
-                    id: user.id,
-                    allow: [
-                        PermissionFlagsBits.ViewChannel,
-                        PermissionFlagsBits.SendMessages,
-                        PermissionFlagsBits.ReadMessageHistory,
-                        PermissionFlagsBits.AttachFiles,
-                        PermissionFlagsBits.EmbedLinks
-                    ]
-                }
-            ]
-        });
-
-        const supportRoles = await db.query(
-            'SELECT role_id FROM support_roles WHERE guild_id = ?',
-            [guild.id]
-        );
-
-        for (const roleData of supportRoles) {
-            const role = guild.roles.cache.get(roleData.role_id);
-            if (role) {
-                await ticketChannel.permissionOverwrites.create(role, {
-                    ViewChannel: true,
-                    SendMessages: true,
-                    ReadMessageHistory: true,
-                    ManageMessages: true,
-                    AttachFiles: true,
-                    EmbedLinks: true
-                });
-            }
-        }
-
-        await ticketChannel.permissionOverwrites.create(client.user.id, {
-            ViewChannel: true,
-            SendMessages: true,
-            ReadMessageHistory: true,
-            ManageMessages: true,
-            ManageChannels: true,
-            AttachFiles: true,
-            EmbedLinks: true
-        });
-
-        await db.run(
-            `INSERT INTO tickets (
-                ticket_id, channel_id, guild_id, user_id, user_tag, reason, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [ticketId, ticketChannel.id, guild.id, user.id, user.tag, reason, 'open']
-        );
-
-        await db.run(
-            `INSERT INTO user_stats (user_id, guild_id, tickets_opened, last_ticket_at) 
-             VALUES (?, ?, 1, CURRENT_TIMESTAMP)
-             ON CONFLICT(user_id, guild_id) 
-             DO UPDATE SET tickets_opened = tickets_opened + 1, last_ticket_at = CURRENT_TIMESTAMP`,
-            [user.id, guild.id]
-        );
-
-        this.ticketCooldowns.set(cooldownKey, Date.now());
-
-        this.activeTickets.set(ticketChannel.id, {
-            id: ticketId,
-            user: user.id,
-            guild: guild.id,
-            reason: reason,
-            createdAt: new Date()
-        });
-
-        return { ticketId, channel: ticketChannel };
-    }
-
-    async closeTicket(channelId, closerId, reason = 'تم الإغلاق بواسطة فريق الدعم') {
-        const ticket = await db.get(
-            'SELECT * FROM tickets WHERE channel_id = ?',
-            [channelId]
-        );
-
-        if (!ticket) throw new Error('التذكرة غير موجودة');
-
-        await db.run(
-            'UPDATE tickets SET status = ?, closed_at = CURRENT_TIMESTAMP WHERE channel_id = ?',
-            ['closed', channelId]
-        );
-
-        await db.run(
-            `UPDATE user_stats SET tickets_closed = tickets_closed + 1 
-             WHERE user_id = ? AND guild_id = ?`,
-            [closerId, ticket.guild_id]
-        );
-
-        this.activeTickets.delete(channelId);
-
-        return ticket;
-    }
-
-    async reopenTicket(channelId) {
-        const ticket = await db.get(
-            'SELECT * FROM tickets WHERE channel_id = ?',
-            [channelId]
-        );
-
-        if (!ticket) throw new Error('التذكرة غير موجودة');
-
-        await db.run(
-            'UPDATE tickets SET status = ?, closed_at = NULL WHERE channel_id = ?',
-            ['open', channelId]
-        );
-
-        this.activeTickets.set(channelId, {
-            id: ticket.ticket_id,
-            user: ticket.user_id,
-            guild: ticket.guild_id,
-            reason: ticket.reason,
-            createdAt: new Date(ticket.created_at)
-        });
-
-        return ticket;
-    }
-
-    async deleteTicket(channelId) {
-        const ticket = await db.get(
-            'SELECT * FROM tickets WHERE channel_id = ?',
-            [channelId]
-        );
-
-        if (!ticket) throw new Error('التذكرة غير موجودة');
-
-        await db.run('DELETE FROM tickets WHERE channel_id = ?', [channelId]);
-        await db.run('DELETE FROM chat_logs WHERE ticket_id = ?', [ticket.ticket_id]);
-
-        this.activeTickets.delete(channelId);
-
-        return ticket;
-    }
-
-    async claimTicket(channelId, userId) {
-        const ticket = await db.get(
-            'SELECT * FROM tickets WHERE channel_id = ?',
-            [channelId]
-        );
-
-        if (!ticket) throw new Error('التذكرة غير موجودة');
-
-        await db.run(
-            'UPDATE tickets SET claimed_by = ?, claimed_at = CURRENT_TIMESTAMP WHERE channel_id = ?',
-            [userId, channelId]
-        );
-
-        return ticket;
-    }
-
-    async getTicketStats(guildId) {
-        const stats = await db.get(`
-            SELECT 
-                COUNT(*) as total,
-                SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open,
-                SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) as closed
-            FROM tickets 
-            WHERE guild_id = ?
-        `, [guildId]);
-
-        return stats || { total: 0, open: 0, closed: 0 };
-    }
-
-    async saveChatLog(ticketId, userId, userTag, message, isSupport = false) {
-        await db.run(
-            `INSERT INTO chat_logs (ticket_id, user_id, user_tag, message, is_support) 
-             VALUES (?, ?, ?, ?, ?)`,
-            [ticketId, userId, userTag, message, isSupport ? 1 : 0]
-        );
-    }
-
-    async generateTranscript(ticketId) {
-        const logs = await db.query(
-            'SELECT * FROM chat_logs WHERE ticket_id = ? ORDER BY timestamp ASC',
-            [ticketId]
-        );
-
-        const ticket = await db.get(
-            'SELECT * FROM tickets WHERE ticket_id = ?',
-            [ticketId]
-        );
-
-        if (!ticket) return 'التذكرة غير موجودة';
+-- إنشاء جدول سجل المحادثات
+CREATE TABLE IF NOT EXISTS chat_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id TEXT,
+    user_id TEXT,
+    user_tag TEXT,
+    message TEXT,
+    is_support INTEGER DEFAULT 0,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
+);
 
         let transcript = `📄 محضر التذكرة ${ticketId}\n`;
         transcript += '='.repeat(50) + '\n\n';
@@ -1540,10 +1347,27 @@ server.listen(process.env.PORT || 3000, () => {
     console.log(`🌐 خادم الويب يعمل على المنفذ: ${process.env.PORT || 3000}`);
 });
 
+
+const express = require('express');
+const app = express();
+
+app.get('/', (req, res) => res.send('Bot is online ✅'));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
+
+
 // ============================================
 // 🚀 تشغيل البوت
 // ============================================
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN; 
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+
+
+if (!DISCORD_TOKEN) {
+    console.error('❌ DISCORD_TOKEN غير موجود في Environment Variables');
+    process.exit(1);
+}
+
 
 
 client.login(DISCORD_TOKEN).catch(error => {
@@ -1591,3 +1415,4 @@ node bot.js
 ===========================================
 
 `);
+

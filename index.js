@@ -18,6 +18,7 @@ const {
 const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs').promises;
 const express = require('express');
+require('dotenv').config();
 
 // ============================================
 // ⚙️ إعدادات التكوين
@@ -35,7 +36,7 @@ const CONFIG = {
         MAX_RESPONSE_LENGTH: 1500,
         RESPONSE_DELAY: 2000
     },
-    DB_PATH: './tickets_database.db',
+    DB_PATH: process.env.DB_PATH || './tickets_database.db',
     CHANNELS: {
         DEFAULT_CATEGORY_NAME: '🎫 التذاكر',
         LOGS_CHANNEL_NAME: '📁 سجلات-التذاكر'
@@ -172,7 +173,7 @@ class AIAssistant {
     constructor() {
         this.isEnabled = CONFIG.AI.ENABLED;
         this.conversations = new Map();
-        this.GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyBFpIHE5k5Bx-2BVu6KwsOltfCyvqHglx4';
+        this.GEMINI_API_KEY = process.env.GEMINI_API_KEY;
         this.initGemini();
     }
 
@@ -279,7 +280,7 @@ class AIAssistant {
 const ai = new AIAssistant();
 
 // ============================================
-// 🎫 مدير التذاكر (مصحح)
+// 🎫 مدير التذاكر
 // ============================================
 class TicketManager {
     constructor() {
@@ -787,7 +788,8 @@ async function registerCommands() {
     const commands = [
         {
             name: 'setup',
-            description: 'إعداد نظام التذاكر في السيرفر'
+            description: 'إعداد نظام التذاكر في السيرفر',
+            default_member_permissions: PermissionFlagsBits.Administrator.toString()
         },
         {
             name: 'add-support-role',
@@ -797,7 +799,8 @@ async function registerCommands() {
                 type: 8,
                 description: 'الرتبة المراد إضافتها',
                 required: true
-            }]
+            }],
+            default_member_permissions: PermissionFlagsBits.Administrator.toString()
         },
         {
             name: 'remove-support-role',
@@ -807,11 +810,13 @@ async function registerCommands() {
                 type: 8,
                 description: 'الرتبة المراد إزالتها',
                 required: true
-            }]
+            }],
+            default_member_permissions: PermissionFlagsBits.Administrator.toString()
         },
         {
             name: 'ticket-stats',
-            description: 'عرض إحصائيات التذاكر'
+            description: 'عرض إحصائيات التذاكر',
+            default_member_permissions: PermissionFlagsBits.ManageChannels.toString()
         },
         {
             name: 'ai',
@@ -825,7 +830,8 @@ async function registerCommands() {
                     { name: 'تشغيل', value: 'on' },
                     { name: 'إيقاف', value: 'off' }
                 ]
-            }]
+            }],
+            default_member_permissions: PermissionFlagsBits.Administrator.toString()
         },
         {
             name: 'transcript',
@@ -833,13 +839,15 @@ async function registerCommands() {
             options: [{
                 name: 'ticket_id',
                 type: 3,
-                description: 'رقم التذكرة',
+                description: 'رقم التذكرة (اختياري)',
                 required: false
-            }]
+            }],
+            default_member_permissions: PermissionFlagsBits.ManageChannels.toString()
         },
         {
             name: 'config',
-            description: 'عرض إعدادات النظام'
+            description: 'عرض إعدادات النظام',
+            default_member_permissions: PermissionFlagsBits.Administrator.toString()
         }
     ];
 
@@ -1439,7 +1447,7 @@ app.get('/', (req, res) => {
         <!DOCTYPE html>
         <html>
         <head>
-            <title>🎫 بوت التذاكر</title>
+            <title>🎫 Arcede Tickets Bot</title>
             <style>
                 body {
                     font-family: Arial, sans-serif;
@@ -1463,12 +1471,12 @@ app.get('/', (req, res) => {
             </style>
         </head>
         <body>
-            <h1>🎫 بوت التذاكر يعمل بنجاح!</h1>
+            <h1>🎫 Arcede Tickets Bot</h1>
             <div class="status">
-                ✅ البوت متصل بـ Discord<br>
-                🤖 Gemini AI: ${ai.model ? '✅ نشط' : '⚠️ في الوضع البسيط'}<br>
-                📊 السيرفرات: ${client.guilds?.cache?.size || 0}<br>
-                👥 المستخدمون: ${client.users?.cache?.size || 0}
+                ✅ Bot is running successfully!<br>
+                🤖 Gemini AI: ${ai.model ? '✅ Active' : '⚠️ Simple Mode'}<br>
+                📊 Servers: ${client.guilds?.cache?.size || 0}<br>
+                👥 Users: ${client.users?.cache?.size || 0}
             </div>
         </body>
         </html>
@@ -1476,7 +1484,7 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`🌐 خادم الويب يعمل على المنفذ: ${PORT}`);
+    console.log(`🌐 Web server running on port: ${PORT}`);
 });
 
 // ============================================
@@ -1485,12 +1493,12 @@ app.listen(PORT, () => {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
 if (!DISCORD_TOKEN) {
-    console.error('❌ DISCORD_TOKEN غير موجود في Environment Variables');
+    console.error('❌ DISCORD_TOKEN is not set in Environment Variables');
     process.exit(1);
 }
 
 client.login(DISCORD_TOKEN).catch(error => {
-    console.error('❌ فشل تسجيل الدخول:', error);
+    console.error('❌ Login failed:', error);
     process.exit(1);
 });
 
@@ -1498,9 +1506,9 @@ client.login(DISCORD_TOKEN).catch(error => {
 // 🛡️ معالجة الأخطاء
 // ============================================
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ خطأ غير معالج:', reason);
+    console.error('❌ Unhandled rejection:', reason);
 });
 
 process.on('uncaughtException', (error) => {
-    console.error('❌ استثناء غير مكتشف:', error);
+    console.error('❌ Uncaught exception:', error);
 });

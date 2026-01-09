@@ -1,5 +1,17 @@
 {
+  "name": "discord-bot",
+  "version": "1.0.0",
+  "description": "My Discord bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
-    "@google/generative-ai": "^0.24.1"
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
+
